@@ -82,3 +82,71 @@ fn take_chunks_vectored() {
         assert_eq!(&*dst[1], &[4, 5, 6]);
     }
 }
+
+#[cfg(feature = "std")]
+#[test]
+fn take_chunks_vectored_respects_prefix_limits() {
+    struct ManyChunks(std::collections::VecDeque<Bytes>);
+
+    impl Buf for ManyChunks {
+        fn remaining(&self) -> usize {
+            self.0.iter().map(Buf::remaining).sum()
+        }
+
+        fn chunk(&self) -> &[u8] {
+            self.0.front().map_or(&[], Buf::chunk)
+        }
+
+        fn advance(&mut self, mut count: usize) {
+            assert!(count <= self.remaining());
+            while count != 0 {
+                let front = self.0.front_mut().unwrap();
+                let advance = count.min(front.remaining());
+                front.advance(advance);
+                count -= advance;
+                if !front.has_remaining() {
+                    self.0.pop_front();
+                }
+            }
+        }
+
+        fn chunks_vectored<'a>(&'a self, dst: &mut [std::io::IoSlice<'a>]) -> usize {
+            let count = dst.len().min(self.0.len());
+            for (slot, chunk) in dst[..count].iter_mut().zip(self.0.iter()) {
+                *slot = std::io::IoSlice::new(chunk.chunk());
+            }
+            count
+        }
+    }
+
+    fn many_chunks() -> impl Buf {
+        ManyChunks((0_u8..20).map(|byte| Bytes::from(vec![byte])).collect())
+    }
+
+    fn returned_bytes(buf: impl Buf, limit: usize, capacity: usize) -> (usize, Vec<u8>) {
+        let take = buf.take(limit);
+        let mut dst = vec![std::io::IoSlice::new(&[]); capacity];
+        let count = take.chunks_vectored(&mut dst);
+        let bytes = dst[..count]
+            .iter()
+            .flat_map(|slice| slice.iter().copied())
+            .collect();
+        (count, bytes)
+    }
+
+    for limit in 0..=20 {
+        for capacity in 0..=20 {
+            let expected_count = limit.min(capacity).min(16);
+            assert_eq!(
+                returned_bytes(many_chunks(), limit, capacity),
+                (expected_count, (0..expected_count as u8).collect())
+            );
+        }
+    }
+
+    let chunks = Bytes::from_static(b"abc").chain(Bytes::from_static(b"defg"));
+    assert_eq!(returned_bytes(chunks, 5, 2), (2, b"abcde".to_vec()));
+
+    let chunks = Bytes::from_static(b"abc").chain(Bytes::from_static(b"defg"));
+    assert_eq!(returned_bytes(chunks, 3, 2), (1, b"abc".to_vec()));
+}
