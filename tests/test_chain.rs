@@ -14,6 +14,27 @@ fn collect_two_bufs() {
 }
 
 #[test]
+fn advance_cursor_matches_flat_buffer() {
+    let a_bytes = b"abcdefgh";
+    let b_bytes = b"ABCDEFGH";
+
+    for a_len in 0..=a_bytes.len() {
+        for b_len in 0..=b_bytes.len() {
+            let expected = [a_bytes[..a_len].as_ref(), b_bytes[..b_len].as_ref()].concat();
+
+            for count in 0..=expected.len() {
+                let mut chain = Bytes::copy_from_slice(&a_bytes[..a_len])
+                    .chain(Bytes::copy_from_slice(&b_bytes[..b_len]));
+                chain.advance(count);
+
+                assert_eq!(chain.remaining(), expected.len() - count);
+                assert_eq!(chain.copy_to_bytes(chain.remaining()), expected[count..]);
+            }
+        }
+    }
+}
+
+#[test]
 fn writing_chained() {
     let mut a = [0u8; 64];
     let mut b = [0u8; 64];
